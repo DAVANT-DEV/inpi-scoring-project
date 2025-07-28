@@ -1,4 +1,4 @@
-const fetch = require('node-fetch');
+const axios = require('axios');
 
 module.exports = async (req, res) => {
   const { siren } = req.query;
@@ -8,50 +8,52 @@ module.exports = async (req, res) => {
   }
 
   try {
-    // Authentification INPI via registre-national-entreprises
-    const authRes = await fetch("https://registre-national-entreprises.inpi.fr/api/sso/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+    // 1. Authentification auprès de l'INPI (registre-national-entreprises)
+    const loginResponse = await axios.post(
+      "https://registre-national-entreprises.inpi.fr/api/sso/login",
+      {
         username: process.env.INPI_USERNAME,
         password: process.env.INPI_PASSWORD
-      }),
-    });
-
-    if (!authRes.ok) {
-      const errText = await authRes.text();
-      return res.status(401).json({ error: "Échec d'authentification INPI", details: errText });
-    }
-
-    const { token } = await authRes.json();
-
-    // Requête vers /companies pour récupérer les données financières
-    const response = await fetch(`https://registre-national-entreprises.inpi.fr/api/companies/${siren}`, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
       },
-    });
+      {
+        headers: {
+          "Content-Type": "application/json"
+        }
+      }
+    );
 
-    if (!response.ok) {
-      const errText = await response.text();
-      return res.status(500).json({ error: "Erreur récupération données INPI", details: errText });
+    const token = loginResponse.data.token;
+    if (!token) {
+      return res.status(401).json({ error: "Token INPI non reçu" });
     }
 
-    const data = await response.json();
+    // 2. Récupération des données de l'entreprise
+    const apiResponse = await axios.get(
+      `https://registre-national-entreprises.inpi.fr/api/companies/${siren}`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json"
+        }
+      }
+    );
 
-    // On extrait les infos financières si disponibles
+    const data = apiResponse.data;
+
+    // 3. Extraction des données financières si elles existent
     const comptes = data?.financial?.financialStatements?.[0]?.compteResultat || {};
 
     return res.status(200).json({
       siren: data.siren,
       denomination: data.denomination,
       dateCreation: data.dateCreation,
-      comptes,
+      comptes
     });
-  } catch (err) {
-    console.error("Erreur API:", err);
-    return res.status(500).json({ error: "Erreur serveur", details: err.message });
+  } catch (error) {
+    console.error("Erreur:", error?.response?.data || error.message);
+    return res.status(500).json({
+      error: "Erreur serveur",
+      details: error?.response?.data || error.message
+    });
   }
 };
