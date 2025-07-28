@@ -1,74 +1,57 @@
-export default async function handler(req, res) {
+const fetch = require('node-fetch');
+
+module.exports = async (req, res) => {
   const { siren } = req.query;
 
-  if (!siren || siren.length !== 9) {
-    return res.status(400).json({ error: "SIREN invalide ou manquant." });
-  }
-
-  const username = process.env.INPI_USERNAME;
-  const password = process.env.INPI_PASSWORD;
-
-  if (!username || !password) {
-    return res.status(500).json({ error: "Identifiants INPI manquants." });
+  if (!siren) {
+    return res.status(400).json({ error: "SIREN manquant" });
   }
 
   try {
-    // Authentification
-    const authRes = await fetch("https://data.inpi.fr/api/authenticate", {
+    // Authentification INPI via registre-national-entreprises
+    const authRes = await fetch("https://registre-national-entreprises.inpi.fr/api/sso/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password })
+      body: JSON.stringify({
+        username: process.env.INPI_USERNAME,
+        password: process.env.INPI_PASSWORD
+      }),
     });
 
     if (!authRes.ok) {
-      return res.status(401).json({ error: "Échec d'authentification INPI" });
+      const errText = await authRes.text();
+      return res.status(401).json({ error: "Échec d'authentification INPI", details: errText });
     }
 
     const { token } = await authRes.json();
 
-    // Appel comptes annuels
-    const apiUrl = `https://data.inpi.fr/api/entreprises/${siren}/comptesannuels`;
-    const dataRes = await fetch(apiUrl, {
+    // Requête vers /companies pour récupérer les données financières
+    const response = await fetch(`https://registre-national-entreprises.inpi.fr/api/companies/${siren}`, {
+      method: "GET",
       headers: {
-        "Authorization": `Bearer ${token}`,
-        "Accept": "application/json"
-      }
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
     });
 
-    if (!dataRes.ok) {
-      return res.status(dataRes.status).json({ error: "Erreur récupération comptes annuels" });
+    if (!response.ok) {
+      const errText = await response.text();
+      return res.status(500).json({ error: "Erreur récupération données INPI", details: errText });
     }
 
-    const data = await dataRes.json();
-    const comptes = data?.bilans?.[0];
-    const bilan = comptes?.bilanSimplifie;
-    const cr = comptes?.compteResultat;
+    const data = await response.json();
+
+    // On extrait les infos financières si disponibles
+    const comptes = data?.financial?.financialStatements?.[0]?.compteResultat || {};
 
     return res.status(200).json({
-      siren,
-      exercice: comptes?.dateCloture || null,
-      ca: cr?.ca || null,
-      resultat: cr?.resultat || null,
-      chargesExploitation: cr?.chargesExploitation || null,
-      produitsExploitation: cr?.produitsExploitation || null,
-      chargesFinancieres: cr?.chargesFinancieres || null,
-      produitsFinanciers: cr?.produitsFinanciers || null,
-      impotsBenefices: cr?.impotsBenefices || null,
-      participationSalaries: cr?.participationSalaries || null,
-      dotationsAmortissements: cr?.dotationsAmortissements || null,
-      chargesExceptionnelles: cr?.chargesExceptionnelles || null,
-      produitsExceptionnels: cr?.produitsExceptionnels || null,
-      subventionsExploitation: cr?.subventionsExploit || null,
-      resultatExploitation: cr?.resultatExploitation || null,
-      resultatFinancier: cr?.resultatFinancier || null,
-      resultatCourantAvantImpots: cr?.resultatCourantAvantImpots || null,
-      totalActif: bilan?.totalActif || null,
-      totalPassif: bilan?.totalPassif || null,
-      capitauxPropres: bilan?.capitauxPropres || null
+      siren: data.siren,
+      denomination: data.denomination,
+      dateCreation: data.dateCreation,
+      comptes,
     });
-
   } catch (err) {
-    console.error("Erreur scoring INPI complet:", err);
-    return res.status(500).json({ error: "Erreur serveur lors de l'appel à l'API INPI" });
+    console.error("Erreur API:", err);
+    return res.status(500).json({ error: "Erreur serveur", details: err.message });
   }
-}
+};
